@@ -12,6 +12,7 @@ import math
 from sklearn.utils.linear_assignment_ import linear_assignment
 import os
 import sys
+import csv
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -133,6 +134,30 @@ def load_data(dataset: str):
         Y = Y - Y.min()             # s.t. Y.min() = 0
         assert len(X) == len(Y) == 73257 + 26032
 
+    elif dataset == 'bing_query':
+        X = []
+        Y = []
+        with open('Query0.1Percent.tsv') as tsvfile:
+            reader = csv.reader(tsvfile, delimiter='\t')
+            for line in reader:
+                temp = line[1]
+                temp = temp.split(',')
+                #temp = np.asarray(temp, dtype=np.float32)
+                if (len(temp) == 768):
+                    #print(len(temp))
+                    X.append(temp)
+                    Y.append(int(line[0]))
+                #assert len(temp) == 768
+                
+            #print(len(X))
+            #print(len(X[0]))
+
+        X = np.asarray(X, dtype=np.float32)
+        X = X/(np.max(X) - np.min(X))
+        Y = np.asarray(Y, dtype=np.float32)
+
+
+
     else:
         assert False
 
@@ -159,5 +184,8 @@ def config_init(dataset: str, pre_train=False):
     elif dataset == 'svhn':
         return 960, 120 if not pre_train else 5, 10, 0.002, 0.00002,\
             10, 0.9, 0.9, 5, 'linear'   
+    elif dataset == 'bing_query':
+        return 768, 1000 if not pre_train else 10, 10, 0.002, 0.00002,\
+            10, 0.9, 0.9, 5, 'linear'  
     else:
         assert False

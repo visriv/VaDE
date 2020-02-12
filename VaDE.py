@@ -70,10 +70,10 @@ def vae_loss(x, x_decoded_mean):
     
     # +1e-10??
     p_c_z=K.exp(K.sum((K.log(theta_tensor3)-0.5*K.log(2*math.pi*lambda_tensor3)-\
-                       K.square(Z-u_tensor3)/(2*lambda_tensor3)),axis=1)) #+1e-10 
+                       K.square(Z-u_tensor3)/(2*lambda_tensor3)),axis=1)) +1e-10 
     # LYL: dunno why but with 1e-10 added, MNIST works well, 
     # while others typically deteriorate.
-    p_c_z += {'mnist': 1e-10, 'svhn': 1e-10, 'cifar-100': 1e-10}.get(dataset, 0)
+    #p_c_z += {'mnist': 1e-10, 'svhn': 1e-10, 'cifar-100': 1e-10}.get(dataset, 0)
     
     gamma=p_c_z/K.sum(p_c_z,axis=-1,keepdims=True)
     gamma_t=K.repeat(gamma,latent_dim)
@@ -118,6 +118,18 @@ def load_pretrain_weights(vade: Model, dataset: str):
     print ('Pretrain weights loaded!')
     return vade
 
+def gmmpara_load(dataset):
+    data = scio.loadmat(os.path.join('trained_model_weights', 
+                     dataset + '_weights_gmm.mat'))
+    theta_init=data['theta']
+    u_init=data['u']
+    lambda_init=data['lambda']
+    
+    theta_p=theano.shared(np.asarray(theta_init,dtype=theano.config.floatX),name="pi")
+    u_p=theano.shared(np.asarray(u_init,dtype=theano.config.floatX),name="u")
+    lambda_p=theano.shared(np.asarray(lambda_init,dtype=theano.config.floatX),name="lambda")
+    return theta_p,u_p,lambda_p
+
 def set_cluster(dataset: str):
     sample = sample_output.predict(X, batch_size=batch_size)
     if dataset == 'reuters10k':
@@ -125,11 +137,11 @@ def set_cluster(dataset: str):
         k.fit(sample)
         u_p.set_value(floatX(k.cluster_centers_.T))
     else:
-        g = mixture.GMM(n_components=n_centroid, covariance_type='diag',
+        g = mixture.GaussianMixture(n_components=n_centroid, covariance_type='diag',
                         random_state=np.random.RandomState())
         g.fit(sample)
         u_p.set_value(floatX(g.means_.T))
-        lambda_p.set_value((floatX(g.covars_.T)))
+        lambda_p.set_value((floatX(g.covariances_.T)))
 
 #===================================
 def lr_decay():
@@ -147,7 +159,7 @@ def epochBegin(epoch):
         lr_decay()
     '''
     sample = sample_output.predict(X,batch_size=batch_size)
-    g = mixture.GMM(n_components=n_centroid,covariance_type='diag')
+    g = mixture.GaussianMixture(n_components=n_centroid,covariance_type='diag')
     g.fit(sample)
     p=g.predict(sample)
     acc_g=cluster_acc(p,Y)
@@ -157,15 +169,18 @@ def epochBegin(epoch):
         print ('no pretrain,random init!')
     '''
     gamma = gamma_output.predict(X,batch_size=batch_size)
+    '''
     acc = cluster_acc(np.argmax(gamma,axis=1),Y)
     global accuracy
     accuracy+=[acc[0]]
+    '''
     pred = p_c_z_output.predict(X, batch_size=batch_size)
+    '''
     p_c_z_acc, _ = cluster_acc(np.argmax(pred, axis=1), Y)
     #print ('acc_gmm_on_z:%0.8f'%acc_g[0])
     print('acc_p_c_z(z): %0.8f' % acc[0]) 
     print('acc_p_c_z(z_mean): {:.8f}'.format(p_c_z_acc))
-    
+    '''
     if epoch==1 and dataset == 'har' and acc[0]<0.77:
         print ('=========== HAR dataset:bad init!Please run again! ============')
         sys.exit(0)
@@ -178,7 +193,7 @@ class PreTrainCallback(Callback):
     def on_epoch_begin(self, epoch, logs):
         # Copied from commented code in epochBegin
         sample = sample_output.predict(X,batch_size=batch_size)
-        g = mixture.GMM(n_components=n_centroid,covariance_type='diag')
+        g = mixture.GaussianMixture(n_components=n_centroid,covariance_type='diag')
         g.fit(sample)
         p = g.predict(sample)
         acc_g, _ = cluster_acc(p,Y)
@@ -192,7 +207,7 @@ class PreTrainCallback(Callback):
 parser = argparse.ArgumentParser(description='VaDE training / pre-training')
 parser.add_argument('dataset', default='mnist',
                     choices=['mnist', 'reuters10k', 'har', 
-                             'cifar-10', 'fashion-mnist', 'cifar-100', 'svhn'],
+                             'cifar-10', 'fashion-mnist', 'cifar-100', 'svhn' ,'bing_query'],
                     help='specify dataset')
 parser.add_argument('-m', '--mode', default='train',
                     choices=['train', 'pre-train', 'raw-train'],
@@ -243,19 +258,29 @@ if args.mode != 'pre-train':    # train or raw-train
     Gamma = Lambda(get_gamma, output_shape=(n_centroid,))(z)
     p_c_z = Lambda(get_gamma, output_shape=(n_centroid,))(z_mean)
     sample_output = Model(x, z_mean)
+
+    z_mean_model = Model(x, z_mean)
+    z_log_var_model = Model(x, z_log_var)
+    
     gamma_output = Model(x, Gamma)
     p_c_z_output = Model(x, p_c_z)
     #===========================================      
     vade = Model(x, x_decoded_mean)
-    if args.mode == 'train':
-        load_pretrain_weights(vade, dataset)
+    
     set_cluster(dataset)
     adam_nn= Adam(lr=lr_nn, epsilon=1e-4)
     adam_gmm= Adam(lr=lr_gmm, epsilon=1e-4)
     vade.compile(optimizer=adam_nn, loss=vae_loss,
                  add_trainable_weights=[theta_p,u_p,lambda_p],
                  add_optimizer=adam_gmm)
+    #stop
     epoch_begin=EpochBegin()
+
+    if args.mode == 'train':
+        #load_pretrain_weights(vade, dataset)
+        vade.load_weights(os.path.join('trained_model_weights', 
+                                   dataset + '_nn.h5'))
+        theta_p,u_p,lambda_p = gmmpara_load(dataset)
     #-------------------------------------------------------
 
     vade.fit(X, X,
@@ -264,11 +289,12 @@ if args.mode != 'pre-train':    # train or raw-train
             batch_size=batch_size,   
             callbacks=[epoch_begin])
 
+    '''
     accuracy,ind = cluster_acc(
         np.argmax(p_c_z_output.predict(X,batch_size=batch_size),axis=1),
         Y)
     print ('Clustering accuracy: %.2f%%'%(accuracy*100))
-    
+    '''
     vade.save_weights(os.path.join('trained_model_weights', 
                                    dataset + '_nn.h5'))
     scio.savemat(
