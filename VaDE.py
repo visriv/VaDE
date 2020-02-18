@@ -12,7 +12,7 @@ Reuters_all: 79.38% +
 '''
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "9"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ['KERAS_BACKEND'] = 'theano'
 import argparse
 import numpy as np
@@ -33,6 +33,7 @@ from sklearn import mixture
 from sklearn.cluster import KMeans
 from keras.models import model_from_json
 from utils import *
+from matplotlib import pyplot as plt
 import warnings
 warnings.filterwarnings("ignore")
         
@@ -131,17 +132,65 @@ def gmmpara_load(dataset):
     return theta_p,u_p,lambda_p
 
 def set_cluster(dataset: str):
-    sample = sample_output.predict(X, batch_size=batch_size)
+    sample = encoder.predict(X, batch_size=batch_size)
     if dataset == 'reuters10k':
         k = KMeans(n_clusters=n_centroid)
         k.fit(sample)
         u_p.set_value(floatX(k.cluster_centers_.T))
     else:
         g = mixture.GaussianMixture(n_components=n_centroid, covariance_type='diag',
-                        random_state=np.random.RandomState())
+                                    random_state=np.random.RandomState())
         g.fit(sample)
         u_p.set_value(floatX(g.means_.T))
         lambda_p.set_value((floatX(g.covariances_.T)))
+
+def decoder_init(dataset):
+    decoder_weights = scio.loadmat('trained_model_weights/' + dataset + '_decoder.mat')
+    u_decoder = decoder_weights['u']
+    lambda_decoder = decoder_weights['lambda']
+    theta_decoder = np.squeeze(decoder_weights['theta'])
+    decoder = model_from_json(open('trained_model_weights/' + dataset + '_decoder.json').read())
+    decoder.load_weights('trained_model_weights/' + dataset + '_decoder_nn.h5')
+    return decoder,theta_decoder,u_decoder,lambda_decoder
+
+def get_posterior(z,u,l,sita):
+    z_m=np.repeat(np.transpose(z),n_centroid,1)
+    posterior=np.exp(np.sum((np.log(sita)-0.5*np.log(2*math.pi*l)-\
+                       np.square(z_m-u)/(2*l)),axis=0))
+    return posterior/np.sum(posterior,axis=-1,keepdims=True)
+
+def mnist_decoder():
+    index=np.asarray(ind)[:,1]
+    mnist_nice_png=np.zeros((280,280))
+    for i in range(10):
+        k=np.where(index==i)[0][0]
+        u=d_u[:,k]
+        l=d_lambda[:,k]
+        sample_n=10
+        count=0
+        while count<sample_n:
+            z_sample=np.random.multivariate_normal(u,np.diag(l),(1,))
+            p=get_posterior(z_sample,d_u,d_lambda,d_theta)[k]
+            if p>0.999:
+                img=decoder.predict(z_sample).reshape((28,28))*255.0
+                mnist_nice_png[i*28:(i+1)*28,count*28:(count+1)*28]=img
+                count+=1
+    return np.asarray(mnist_nice_png,dtype=np.uint8)   
+
+def scatter(x, colors, dataset):
+    # We choose a color palette with seaborn.
+    palette = np.array(sns.color_palette("hls", 10))
+
+    # We create a scatter plot.
+    f = plt.figure(figsize=(8, 8))
+    ax = plt.subplot(aspect='equal')
+    sc = ax.scatter(x[:,0], x[:,1], lw=0, s=40, c=palette[colors.astype(np.int)])
+    plt.xlim(-25, 25)
+    plt.ylim(-25, 25)
+    ax.axis('off')
+    ax.axis('tight')
+    plt.savefig('plots\\' + dataset + '_latent_space_tsne.png')
+    return f, ax, sc
 
 #===================================
 def lr_decay():
@@ -157,17 +206,7 @@ def lr_decay():
 def epochBegin(epoch):
     if epoch % decay_n == 0 and epoch:
         lr_decay()
-    '''
-    sample = sample_output.predict(X,batch_size=batch_size)
-    g = mixture.GaussianMixture(n_components=n_centroid,covariance_type='diag')
-    g.fit(sample)
-    p=g.predict(sample)
-    acc_g=cluster_acc(p,Y)
     
-    if epoch <1 and train == False:
-        u_p.set_value(floatX(g.means_.T))
-        print ('no pretrain,random init!')
-    '''
     gamma = gamma_output.predict(X,batch_size=batch_size)
     '''
     acc = cluster_acc(np.argmax(gamma,axis=1),Y)
@@ -192,7 +231,7 @@ class EpochBegin(Callback):
 class PreTrainCallback(Callback):
     def on_epoch_begin(self, epoch, logs):
         # Copied from commented code in epochBegin
-        sample = sample_output.predict(X,batch_size=batch_size)
+        sample = encoder.predict(X,batch_size=batch_size)
         g = mixture.GaussianMixture(n_components=n_centroid,covariance_type='diag')
         g.fit(sample)
         p = g.predict(sample)
@@ -207,13 +246,17 @@ class PreTrainCallback(Callback):
 parser = argparse.ArgumentParser(description='VaDE training / pre-training')
 parser.add_argument('dataset', default='mnist',
                     choices=['mnist', 'reuters10k', 'har', 
-                             'cifar-10', 'fashion-mnist', 'cifar-100', 'svhn' ,'bing_query'],
+                             'cifar-10', 'fashion-mnist', 'cifar-100', 'svhn' ,'bing_query', 'bing_query1'],
                     help='specify dataset')
 parser.add_argument('-m', '--mode', default='train',
                     choices=['train', 'pre-train', 'raw-train'],
                     help='training with or without pre-training ' \
                         + '/ pre-training (default train)')
 parser.add_argument('-e', '--epoch', type=int, help='number of epochs')
+parser.add_argument('-infer', '--inference', type=bool, default = True, help='latent space visualization')
+
+
+
 args = parser.parse_args()
 dataset = args.dataset
 print ('{} on {}'.format(args.mode.capitalize(), dataset))
@@ -222,8 +265,9 @@ if args.epoch is not None:
 
 batch_size = 100
 latent_dim = 10
-intermediate_dim = [500,500,2000]
+intermediate_dim = [500,500,2000,400]
 theano.config.floatX='float32'
+RS = 20150101
 accuracy=[]
 X,Y = load_data(dataset)
 print('X.shape: ' + str(X.shape))
@@ -245,6 +289,7 @@ if args.mode != 'pre-train':    # train or raw-train
     h = Dense(intermediate_dim[0], activation='relu')(x)
     h = Dense(intermediate_dim[1], activation='relu')(h)
     h = Dense(intermediate_dim[2], activation='relu')(h)
+    h = Dense(intermediate_dim[3], activation='relu')(h)
     z_mean = Dense(latent_dim)(h)
     z_log_var = Dense(latent_dim)(h)
     z = Lambda(Sampling(batch_size, latent_dim), 
@@ -252,19 +297,16 @@ if args.mode != 'pre-train':    # train or raw-train
     h_decoded = Dense(intermediate_dim[-1], activation='relu')(z)
     h_decoded = Dense(intermediate_dim[-2], activation='relu')(h_decoded)
     h_decoded = Dense(intermediate_dim[-3], activation='relu')(h_decoded)
+    h_decoded = Dense(intermediate_dim[-4], activation='relu')(h_decoded)
     x_decoded_mean = Dense(original_dim, activation=datatype)(h_decoded)
 
-    #========================
     Gamma = Lambda(get_gamma, output_shape=(n_centroid,))(z)
     p_c_z = Lambda(get_gamma, output_shape=(n_centroid,))(z_mean)
-    sample_output = Model(x, z_mean)
 
-    z_mean_model = Model(x, z_mean)
-    z_log_var_model = Model(x, z_log_var)
-    
+    #========================
+    encoder = Model(x, z)
     gamma_output = Model(x, Gamma)
-    p_c_z_output = Model(x, p_c_z)
-    #===========================================      
+    p_c_z_output = Model(x, p_c_z)    
     vade = Model(x, x_decoded_mean)
     
     set_cluster(dataset)
@@ -273,7 +315,7 @@ if args.mode != 'pre-train':    # train or raw-train
     vade.compile(optimizer=adam_nn, loss=vae_loss,
                  add_trainable_weights=[theta_p,u_p,lambda_p],
                  add_optimizer=adam_gmm)
-    #stop
+    
     epoch_begin=EpochBegin()
 
     if args.mode == 'train':
@@ -289,12 +331,6 @@ if args.mode != 'pre-train':    # train or raw-train
             batch_size=batch_size,   
             callbacks=[epoch_begin])
 
-    '''
-    accuracy,ind = cluster_acc(
-        np.argmax(p_c_z_output.predict(X,batch_size=batch_size),axis=1),
-        Y)
-    print ('Clustering accuracy: %.2f%%'%(accuracy*100))
-    '''
     vade.save_weights(os.path.join('trained_model_weights', 
                                    dataset + '_nn.h5'))
     scio.savemat(
@@ -309,17 +345,23 @@ else:   # pre-train
     h = Dense(intermediate_dim[0], activation='relu')(x)
     h = Dense(intermediate_dim[1], activation='relu')(h)
     h = Dense(intermediate_dim[2], activation='relu')(h)
-    z = Dense(latent_dim)(h)
+    h = Dense(intermediate_dim[3], activation='relu')(h)
+    z_mean = Dense(latent_dim)(h)
+    z_log_var = Dense(latent_dim)(h)
+    z = Lambda(Sampling(batch_size, latent_dim), 
+               output_shape=(latent_dim,))([z_mean, z_log_var])
     h_decoded = Dense(intermediate_dim[-1], activation='relu')(z) 
     h_decoded = Dense(intermediate_dim[-2], activation='relu')(h_decoded)
     h_decoded = Dense(intermediate_dim[-3], activation='relu')(h_decoded)
+    h_decoded = Dense(intermediate_dim[-4], activation='relu')(h_decoded)
     x_decoded_mean = Dense(original_dim, activation=datatype)(h_decoded)
+    p_c_z = Lambda(get_gamma, output_shape=(n_centroid,))(z_mean)
 
     ae = Model(x, x_decoded_mean)
-    sample_output = Model(x, z)    # Only for PreTrainCallback (optional)
+    encoder = Model(x, z)    # Only for PreTrainCallback (optional)
+    p_c_z_output = Model(x, p_c_z)  
     adam_nn = Adam(lr=lr_nn, epsilon=1e-4)
-    # TODO: what loss function to use?
-    # (Currently, all additional datasets use mean_squared_error)
+
     ae.compile(optimizer=adam_nn, 
                loss=objectives.binary_crossentropy \
                    if datatype == 'sigmoid' \
@@ -338,3 +380,25 @@ else:   # pre-train
     ae.save_weights(os.path.join('pretrain_weights', 
                                  'ae_' + dataset + '_weights.h5'))
 
+
+''' Inference and latent dimension visualization '''
+if(inference):
+    cluster_labels = p_c_z_output.predict(X,batch_size=batch_size)
+    n_samples_plot = 1000
+    X = X[0:n_samples_plot]
+    sample_z = encoder.predict(X,batch_size=batch_size)
+    g = mixture.GaussianMixture(n_components=n_centroid,covariance_type='diag')
+    g.fit(sample_z)
+    p = g.predict(sample_z)
+
+    z_reduced = TSNE(random_state=RS).fit_transform(sample_z)
+    scatter(z_reduced, p, dataset)
+    
+
+
+    # digits generation
+    decoder,d_theta,d_u,d_lambda = decoder_init(dataset)
+    if (dataset == 'mnist'):
+        digit_image = mnist_decoder()
+        plt.imshow(digit_image,cmap=cm.gray)
+        plt.show()

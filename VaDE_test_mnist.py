@@ -18,7 +18,7 @@ import  theano
 import  theano.tensor as T
 import math
 from keras.models import model_from_json
-from PIL import Image
+#from PIL import Image
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -134,6 +134,7 @@ print ('MNIST dataset VaDE - clustering accuracy: %.2f%%'%(accuracy*100))
 #==================   digits generation
 
 gene,g_theta,g_u,g_lambda = generation_init()
+
 
 def mnist_gene():
     index=np.asarray(ind)[:,1]

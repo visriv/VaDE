@@ -134,29 +134,31 @@ def load_data(dataset: str):
         Y = Y - Y.min()             # s.t. Y.min() = 0
         assert len(X) == len(Y) == 73257 + 26032
 
-    elif dataset == 'bing_query':
-        X = []
-        Y = []
-        with open('Query0.1Percent.tsv') as tsvfile:
-            reader = csv.reader(tsvfile, delimiter='\t')
-            for line in reader:
-                temp = line[1]
-                temp = temp.split(',')
-                #temp = np.asarray(temp, dtype=np.float32)
-                if (len(temp) == 768):
-                    #print(len(temp))
-                    X.append(temp)
-                    Y.append(int(line[0]))
-                #assert len(temp) == 768
-                
-            #print(len(X))
-            #print(len(X[0]))
+    elif 'bing_query' in dataset:
+        path = os.path.join('dataset', 'bing_query')
+        if not os.path.exists(os.path.join(path, dataset) + '.mat'):
+            X = []
+            Y = []
+            
+            with open(os.path.join(path, dataset) + '.tsv') as tsvfile:
+                reader = csv.reader(tsvfile, delimiter='\t')
+                for line in reader:
+                    temp = line[1]
+                    temp = temp.split(',')
+                    if (len(temp) == 768):
+                        X.append(temp)
+                        Y.append(int(line[0]))
+            X = np.asarray(X, dtype=np.float32)
+            X = X/(np.max(X) - np.min(X))
+            Y = np.asarray(Y, dtype=np.float32)
 
-        X = np.asarray(X, dtype=np.float32)
-        X = X/(np.max(X) - np.min(X))
-        Y = np.asarray(Y, dtype=np.float32)
+            scio.savemat(os.path.join(path, dataset),
+                         {'X': X, 'Y': Y})
 
-
+        else:
+            data = scio.loadmat(os.path.join(path, dataset + '.mat'))
+            X = data['X']
+            Y = data['Y'].squeeze()
 
     else:
         assert False
@@ -184,8 +186,8 @@ def config_init(dataset: str, pre_train=False):
     elif dataset == 'svhn':
         return 960, 120 if not pre_train else 5, 10, 0.002, 0.00002,\
             10, 0.9, 0.9, 5, 'linear'   
-    elif dataset == 'bing_query':
-        return 768, 1000 if not pre_train else 10, 10, 0.002, 0.00002,\
-            10, 0.9, 0.9, 5, 'linear'  
+    elif dataset == 'bing_query1':
+        return 768, 100 if not pre_train else 4, 10, 0.008, 0.00008,\
+            10, 0.98, 0.98, 5, 'linear'  
     else:
         assert False
